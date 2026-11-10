@@ -23,3 +23,16 @@ python3 gemmConversion.py 20480 fp16
 python3 gemmConversion.py 24576 fp16
 python3 gemmConversion.py 28672 fp16
 python3 gemmConversion.py 32768 fp16
+
+python3 gemmConversion.py 256 bf16
+python3 gemmConversion.py 512 bf16
+python3 gemmConversion.py 1024 bf16
+python3 gemmConversion.py 2048 bf16
+python3 gemmConversion.py 4096 bf16
+python3 gemmConversion.py 8192 bf16
+python3 gemmConversion.py 12288 bf16
+python3 gemmConversion.py 16384 bf16
+python3 gemmConversion.py 20480 bf16
+python3 gemmConversion.py 24576 bf16
+python3 gemmConversion.py 28672 bf16
+python3 gemmConversion.py 32768 bf16
