@@ -27,31 +27,75 @@ import torch
 from torch import nn
 
 # ---------------------------------------------------------------------------
-# GPU power sampling via NVML (pynvml)
+# GPU power sampling — tries pynvml first, falls back to nvidia-smi
 # ---------------------------------------------------------------------------
 try:
     import pynvml
-
     _HAS_NVML = True
 except ImportError:
     _HAS_NVML = False
 
 
+def _nvidia_smi_power_draw():
+    """Query instantaneous GPU power via nvidia-smi (fallback). Returns watts or None."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=power.draw", "--format=csv,noheader,nounits"],
+            capture_output=True, check=True, text=True,
+        )
+        return float(result.stdout.strip().splitlines()[0])
+    except Exception:
+        return None
+
+
 class GpuPowerSampler:
-    """Background thread that samples GPU power draw at a fixed interval."""
+    """Background thread that samples GPU power draw at a fixed interval.
+
+    Uses pynvml (NVML C library) when available; otherwise falls back to
+    calling ``nvidia-smi`` in a subprocess, which is slower but always
+    available on any NVIDIA driver installation.
+    """
 
     def __init__(self, gpu_index=0, interval_ms=50):
-        if not _HAS_NVML:
-            raise RuntimeError("pynvml is not installed – run: pip install pynvml")
-        pynvml.nvmlInit()
-        self._handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
+        self._use_nvml = False
+        self._handle = None
+        self._gpu_index = gpu_index
+
+        if _HAS_NVML:
+            try:
+                pynvml.nvmlInit()
+                self._handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
+                self._use_nvml = True
+            except Exception:
+                pass  # fall through to nvidia-smi
+
+        if not self._use_nvml:
+            # Quick check that nvidia-smi works at all
+            if _nvidia_smi_power_draw() is None:
+                raise RuntimeError(
+                    "Neither pynvml nor nvidia-smi could read GPU power. "
+                    "Install pynvml (pip install pynvml) or verify your NVIDIA driver."
+                )
+            # nvidia-smi is slow (~30 ms per call), use a longer interval
+            interval_ms = max(interval_ms, 200)
+
         self._interval = interval_ms / 1000.0
-        self._samples_mw = []          # milliwatts
+        self._samples_w = []  # watts
         self._stop_event = threading.Event()
         self._thread = None
 
+    def _read_power_w(self):
+        """Read instantaneous GPU power in watts."""
+        if self._use_nvml:
+            try:
+                return pynvml.nvmlDeviceGetPowerUsage(self._handle) / 1000.0
+            except Exception:
+                return None
+        else:
+            return _nvidia_smi_power_draw()
+
     def start(self):
-        self._samples_mw.clear()
+        self._samples_w.clear()
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
         self._thread.start()
@@ -63,28 +107,26 @@ class GpuPowerSampler:
 
     def _sample_loop(self):
         while not self._stop_event.is_set():
-            try:
-                power_mw = pynvml.nvmlDeviceGetPowerUsage(self._handle)  # milliwatts
-                self._samples_mw.append(power_mw)
-            except pynvml.NVMLError:
-                pass
+            power = self._read_power_w()
+            if power is not None:
+                self._samples_w.append(power)
             self._stop_event.wait(self._interval)
 
     @property
     def samples(self):
-        return list(self._samples_mw)
+        return list(self._samples_w)
 
     @property
     def mean_power_w(self):
-        if not self._samples_mw:
+        if not self._samples_w:
             return None
-        return sum(self._samples_mw) / len(self._samples_mw) / 1000.0
+        return sum(self._samples_w) / len(self._samples_w)
 
     @property
     def peak_power_w(self):
-        if not self._samples_mw:
+        if not self._samples_w:
             return None
-        return max(self._samples_mw) / 1000.0
+        return max(self._samples_w)
 
     def estimated_energy_j(self, elapsed_seconds):
         """Estimate total GPU energy as mean_power × elapsed_time."""
@@ -229,13 +271,14 @@ def main(size, runtimes, datatype, iterations):
     matrix_a = torch.rand(grid_size, grid_size, dtype=torch_dtype, device=device)
     matrix_b = torch.rand(grid_size, grid_size, dtype=torch_dtype, device=device)
 
-    # ---- GPU power sampler -------------------------------------------------
+    # ---- GPU power sampler (pynvml or nvidia-smi fallback) ----------------
     gpu_sampler = None
-    if _HAS_NVML:
-        try:
-            gpu_sampler = GpuPowerSampler(gpu_index=0, interval_ms=50)
-        except Exception as exc:
-            print(f"[WARN] Could not initialise GPU power sampler: {exc}")
+    try:
+        gpu_sampler = GpuPowerSampler(gpu_index=0, interval_ms=50)
+        backend = "pynvml" if gpu_sampler._use_nvml else "nvidia-smi"
+        print(f"[INFO] GPU power sampling via {backend}")
+    except Exception as exc:
+        print(f"[WARN] GPU power sampling unavailable: {exc}")
 
     # ---- Run inference -----------------------------------------------------
     print(f"[INFO] Running {runtimes} inference(s) on CUDA...")
@@ -295,14 +338,10 @@ def main(size, runtimes, datatype, iterations):
     if cpu_energy:
         print(f"  CPU RAPL energy : {json.dumps(cpu_energy, sort_keys=True)} J")
         print(f"  CPU RAPL power  : {json.dumps(cpu_power_mw, sort_keys=True)} mW")
-    else:
-        print("  CPU RAPL        : unavailable (check powercap sysfs / sudo)")
     if gpu_energy_j is not None:
         print(f"  GPU energy      : {gpu_energy_j:.3f} J  ({gpu_num_samples} samples)")
         print(f"  GPU mean power  : {gpu_mean_power_w:.3f} W")
         print(f"  GPU peak power  : {gpu_peak_power_w:.3f} W")
-    else:
-        print("  GPU energy      : unavailable (install pynvml: pip install pynvml)")
     print("*" * 100)
 
     # ---- CSV: timing -------------------------------------------------------
