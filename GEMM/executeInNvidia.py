@@ -210,7 +210,12 @@ class MyMachine(nn.Module):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main(size, runtimes, datatype, iterations):
+def main(size, runtimes, datatype, exec_mode, iterations):
+    """
+    exec_mode: 'cpu'         — run matmul on the CPU
+               'gpu'         — run on CUDA cores (Tensor Cores disabled)
+               'tensorcores' — run on CUDA with Tensor Cores enabled
+    """
     if size.is_integer():
         ssize = str(int(size))
         grid_size = int(size)
@@ -218,74 +223,95 @@ def main(size, runtimes, datatype, iterations):
         ssize = str(size)
         grid_size = int(size)
 
-    # ---- Validate CUDA / Tensor Cores -------------------------------------
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available; an NVIDIA GPU is required")
+    exec_mode = exec_mode.lower()
+    if exec_mode not in ("cpu", "gpu", "tensorcores"):
+        print("Error: exec_mode must be 'cpu', 'gpu', or 'tensorcores'.")
+        return
 
-    device = torch.device("cuda")
-    capability = torch.cuda.get_device_capability(device)
-    if capability < (7, 0):
-        raise RuntimeError(
-            f"GPU compute capability {capability[0]}.{capability[1]} "
-            "does not support Tensor Cores"
-        )
-    gpu_name = torch.cuda.get_device_name(device)
-    print(f"[INFO] GPU: {gpu_name}  (SM {capability[0]}.{capability[1]})")
+    use_cuda = exec_mode in ("gpu", "tensorcores")
+    use_tc = exec_mode == "tensorcores"
+
+    # ---- Validate CUDA when needed ----------------------------------------
+    if use_cuda:
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available; an NVIDIA GPU is required")
+        device = torch.device("cuda")
+        capability = torch.cuda.get_device_capability(device)
+        gpu_name = torch.cuda.get_device_name(device)
+        print(f"[INFO] GPU: {gpu_name}  (SM {capability[0]}.{capability[1]})")
+
+        if use_tc and capability < (7, 0):
+            raise RuntimeError(
+                f"GPU compute capability {capability[0]}.{capability[1]} "
+                "does not support Tensor Cores"
+            )
+    else:
+        device = torch.device("cpu")
+        capability = None
+        print(f"[INFO] Running on CPU ({os.cpu_count()} logical cores)")
+
+    # ---- Tensor Core / TF32 configuration ---------------------------------
+    if use_cuda:
+        if use_tc:
+            # Enable Tensor Cores: TF32 for FP32 on Ampere+, FP16/BF16 auto
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        else:
+            # Force CUDA cores only: disable TF32
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
 
     # ---- Dtype setup -------------------------------------------------------
     if datatype == "fp32":
         torch_dtype = torch.float32
-        if capability >= (8, 0):
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            print("[INFO] TF32 Tensor Core acceleration enabled for FP32 matmul")
-        else:
+        if use_tc and capability is not None and capability < (8, 0):
             raise RuntimeError(
                 "FP32 Tensor Core matmul (TF32) requires SM 8.0+; use fp16"
             )
+        if use_tc and capability is not None and capability >= (8, 0):
+            print("[INFO] TF32 Tensor Core acceleration enabled for FP32 matmul")
     elif datatype == "fp16":
         torch_dtype = torch.float16
+        if not use_tc and use_cuda:
+            print("[INFO] FP16 on CUDA cores (note: cuBLAS may still use Tensor Cores "
+                  "for fp16; for a pure CUDA-core baseline prefer fp32+gpu mode)")
     elif datatype == "bf16":
-        if capability >= (8, 0):
-            torch_dtype = torch.bfloat16
-        else:
-            raise RuntimeError(
-                "BF16 Tensor Core matmul requires SM 8.0+; use fp16"
-            )
+        torch_dtype = torch.bfloat16
+        if use_cuda and capability is not None and capability < (8, 0):
+            raise RuntimeError("BF16 requires SM 8.0+; use fp16")
     else:
         print("Error: datatype not available! Use 'fp32', 'fp16', or 'bf16'.")
         return
 
-    # ---- Load TorchScript model or fall back to fresh model ----------------
-    ts_path = f"matmul{ssize}_model_{datatype}.pt"
-    if os.path.isfile(ts_path):
-        print(f"[INFO] Loading TorchScript model: {ts_path}")
-        model = torch.jit.load(ts_path, map_location=device)
-    else:
-        print(f"[INFO] TorchScript model not found ({ts_path}); using inline model")
-        model = MyMachine().to(device)
-    model.eval()
+    print(f"[INFO] Mode: {exec_mode}  |  Dtype: {datatype}  |  Device: {device}")
 
-    # ---- Create inputs on GPU ----------------------------------------------
-    print("[INFO] Creating GEMM inputs on GPU...")
+    # ---- Load model --------------------------------------------------------
+    model = MyMachine().to(device).eval()
+
+    # ---- Create inputs -----------------------------------------------------
+    print("[INFO] Creating GEMM inputs...")
     matrix_a = torch.rand(grid_size, grid_size, dtype=torch_dtype, device=device)
     matrix_b = torch.rand(grid_size, grid_size, dtype=torch_dtype, device=device)
 
-    # ---- GPU power sampler (pynvml or nvidia-smi fallback) ----------------
+    # ---- GPU power sampler (only when running on CUDA) --------------------
     gpu_sampler = None
-    try:
-        gpu_sampler = GpuPowerSampler(gpu_index=0, interval_ms=50)
-        backend = "pynvml" if gpu_sampler._use_nvml else "nvidia-smi"
-        print(f"[INFO] GPU power sampling via {backend}")
-    except Exception as exc:
-        print(f"[WARN] GPU power sampling unavailable: {exc}")
+    if use_cuda:
+        try:
+            gpu_sampler = GpuPowerSampler(gpu_index=0, interval_ms=50)
+            backend = "pynvml" if gpu_sampler._use_nvml else "nvidia-smi"
+            print(f"[INFO] GPU power sampling via {backend}")
+        except Exception as exc:
+            print(f"[WARN] GPU power sampling unavailable: {exc}")
 
     # ---- Run inference -----------------------------------------------------
-    print(f"[INFO] Running {runtimes} inference(s) on CUDA...")
+    print(f"[INFO] Running {runtimes} inference(s) on {exec_mode}...")
 
-    min_gpu_ms = math.inf
-    cuda_start = torch.cuda.Event(enable_timing=True)
-    cuda_end = torch.cuda.Event(enable_timing=True)
+    min_time_ms = math.inf
+
+    # CUDA events for GPU timing (only when on CUDA)
+    if use_cuda:
+        cuda_start = torch.cuda.Event(enable_timing=True)
+        cuda_end = torch.cuda.Event(enable_timing=True)
 
     # Start energy/power measurement
     rapl_start = read_rapl_counters()
@@ -295,12 +321,17 @@ def main(size, runtimes, datatype, iterations):
 
     with torch.inference_mode():
         for _ in range(runtimes):
-            cuda_start.record()
-            _ = model(matrix_a, matrix_b)
-            cuda_end.record()
-            torch.cuda.synchronize(device)
-            gpu_ms = cuda_start.elapsed_time(cuda_end)
-            min_gpu_ms = min(min_gpu_ms, gpu_ms)
+            if use_cuda:
+                cuda_start.record()
+                _ = model(matrix_a, matrix_b)
+                cuda_end.record()
+                torch.cuda.synchronize(device)
+                iter_ms = cuda_start.elapsed_time(cuda_end)
+            else:
+                iter_start = time.perf_counter()
+                _ = model(matrix_a, matrix_b)
+                iter_ms = (time.perf_counter() - iter_start) * 1000.0
+            min_time_ms = min(min_time_ms, iter_ms)
 
     wall_elapsed = time.perf_counter() - wall_start
     if gpu_sampler:
@@ -308,7 +339,7 @@ def main(size, runtimes, datatype, iterations):
     rapl_end = read_rapl_counters()
 
     mean_time_s = wall_elapsed / runtimes
-    peak_time_s = min_gpu_ms / 1000.0  # convert ms → s
+    peak_time_s = min_time_ms / 1000.0  # convert ms → s
 
     # ---- RAPL CPU energy ---------------------------------------------------
     cpu_energy = rapl_energy_delta(rapl_start, rapl_end)
@@ -332,9 +363,9 @@ def main(size, runtimes, datatype, iterations):
 
     # ---- Console output ----------------------------------------------------
     print("*" * 100)
-    print(f"GEMM {grid_size}×{grid_size}  |  {datatype}  |  {runtimes} run(s)")
+    print(f"GEMM {grid_size}×{grid_size}  |  {exec_mode}  |  {datatype}  |  {runtimes} run(s)")
     print(f"  Mean wall time  : {mean_time_s:.6f} s")
-    print(f"  Peak GPU time   : {peak_time_s:.6f} s  ({min_gpu_ms:.3f} ms)")
+    print(f"  Peak time       : {peak_time_s:.6f} s  ({min_time_ms:.3f} ms)")
     if cpu_energy:
         print(f"  CPU RAPL energy : {json.dumps(cpu_energy, sort_keys=True)} J")
         print(f"  CPU RAPL power  : {json.dumps(cpu_power_mw, sort_keys=True)} mW")
@@ -345,7 +376,7 @@ def main(size, runtimes, datatype, iterations):
     print("*" * 100)
 
     # ---- CSV: timing -------------------------------------------------------
-    timing_filename = f"gemm_{grid_size}x{grid_size}_cuda.csv"
+    timing_filename = f"gemm_{grid_size}x{grid_size}_{exec_mode}.csv"
     if os.path.exists(timing_filename):
         timing_line = f"{datatype};{mean_time_s:.6f};{peak_time_s:.6f};\n"
     else:
@@ -358,7 +389,7 @@ def main(size, runtimes, datatype, iterations):
 
     # ---- CSV: CPU energy (RAPL) --------------------------------------------
     if cpu_energy:
-        cpu_energy_filename = f"gemm_cpuEnergy_{grid_size}x{grid_size}_cuda.csv"
+        cpu_energy_filename = f"gemm_cpuEnergy_{grid_size}x{grid_size}_{exec_mode}.csv"
         with open(cpu_energy_filename, "a") as f:
             if f.tell() == 0:
                 f.write("datatype;iterations;runtimes;EnergyByDomain_J\n")
@@ -367,7 +398,7 @@ def main(size, runtimes, datatype, iterations):
                 f"{json.dumps(cpu_energy, sort_keys=True)}\n"
             )
 
-        cpu_power_filename = f"gemm_cpuPower_{grid_size}x{grid_size}_cuda.csv"
+        cpu_power_filename = f"gemm_cpuPower_{grid_size}x{grid_size}_{exec_mode}.csv"
         with open(cpu_power_filename, "a") as f:
             if f.tell() == 0:
                 f.write("datatype;iterations;runtimes;AveragePowerByDomain_mW\n")
@@ -378,7 +409,7 @@ def main(size, runtimes, datatype, iterations):
 
     # ---- CSV: GPU energy (NVML) --------------------------------------------
     if gpu_energy_j is not None:
-        gpu_energy_filename = f"gemm_gpuEnergy_{grid_size}x{grid_size}_cuda.csv"
+        gpu_energy_filename = f"gemm_gpuEnergy_{grid_size}x{grid_size}_{exec_mode}.csv"
         with open(gpu_energy_filename, "a") as f:
             if f.tell() == 0:
                 f.write(
@@ -394,12 +425,13 @@ def main(size, runtimes, datatype, iterations):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Run GEMM inference on NVIDIA GPU with Tensor Cores."
+        description="Run GEMM on CPU, GPU (CUDA cores), or Tensor Cores."
     )
     parser.add_argument("float_input", type=float, help="matrix size")
     parser.add_argument("iteration_input", type=int, help="iteration count")
     parser.add_argument("int_input", type=int, help="number of inference runs")
     parser.add_argument("datatype_input", type=str, help="datatype: fp32/fp16/bf16")
+    parser.add_argument("device_input", type=str, help="exec mode: cpu/gpu/tensorcores")
 
     args = parser.parse_args()
     if args.float_input <= 0 or args.int_input <= 0:
@@ -408,5 +440,6 @@ if __name__ == "__main__":
         args.float_input,
         args.int_input,
         args.datatype_input,
+        args.device_input,
         args.iteration_input,
     )
