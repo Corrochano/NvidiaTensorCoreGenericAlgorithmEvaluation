@@ -1,0 +1,4 @@
+datatype;iterations;runtimes;gpu_energy_J;gpu_mean_power_W;gpu_peak_power_W;samples
+fp32;1;1;3.678049;24.058;24.773;3
+fp16;1;1;4.663510;15.387;15.712;6
+bf16;1;1;3.558684;15.412;15.412;5

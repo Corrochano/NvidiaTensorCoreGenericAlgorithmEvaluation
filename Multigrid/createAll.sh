@@ -1,36 +1,15 @@
-python3 multigridConversion.py 256 100 fp32
-python3 multigridConversion.py 512 100 fp32
-python3 multigridConversion.py 1024 100 fp32
-python3 multigridConversion.py 2048 100 fp32
-python3 multigridConversion.py 4096 100 fp32
-python3 multigridConversion.py 8192 100 fp32
-python3 multigridConversion.py 12288 100 fp32
 python3 multigridConversion.py 16384 100 fp32
 python3 multigridConversion.py 20480 100 fp32
 python3 multigridConversion.py 24576 100 fp32
 python3 multigridConversion.py 28672 100 fp32
 python3 multigridConversion.py 32768 100 fp32
 
-python3 multigridConversion.py 256 100 fp16
-python3 multigridConversion.py 512 100 fp16
-python3 multigridConversion.py 1024 100 fp16
-python3 multigridConversion.py 2048 100 fp16
-python3 multigridConversion.py 4096 100 fp16
-python3 multigridConversion.py 8192 100 fp16
-python3 multigridConversion.py 12288 100 fp16
 python3 multigridConversion.py 16384 100 fp16
 python3 multigridConversion.py 20480 100 fp16
 python3 multigridConversion.py 24576 100 fp16
 python3 multigridConversion.py 28672 100 fp16
 python3 multigridConversion.py 32768 100 fp16
 
-python3 multigridConversion.py 256 100 bf16
-python3 multigridConversion.py 512 100 bf16
-python3 multigridConversion.py 1024 100 bf16
-python3 multigridConversion.py 2048 100 bf16
-python3 multigridConversion.py 4096 100 bf16
-python3 multigridConversion.py 8192 100 bf16
-python3 multigridConversion.py 12288 100 bf16
 python3 multigridConversion.py 16384 100 bf16
 python3 multigridConversion.py 20480 100 bf16
 python3 multigridConversion.py 24576 100 bf16
