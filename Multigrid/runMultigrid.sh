@@ -32,7 +32,7 @@ printf '\n[INFO] Running GPU warmup...\n'
 python3 "$script_dir/warmup.py"
 
 # --- Grid sizes, datatypes, and execution modes -----------------------------
-sizes=(256 512 1024 2048 4096 8192)
+sizes=(256 512 1024 2048 4096 8192 12288 16384 20480 )
 datatypes=(fp32 fp16 bf16)
 exec_modes=(cpu gpu tensorcores)
 failures=0
