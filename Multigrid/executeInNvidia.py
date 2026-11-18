@@ -358,15 +358,17 @@ def main(grid_size, iterations, runtimes, datatype, exec_mode):
       print("[INFO] TF32 Tensor Core acceleration enabled for FP32 conv")
   elif datatype == "fp16":
     torch_dtype = torch.float16
-    if not use_tc and use_cuda:
-      print(
-          "[INFO] FP16 on CUDA cores (note: cuDNN may still use Tensor Cores "
-          "for fp16; for a pure CUDA-core baseline prefer fp32+gpu mode)"
-      )
   elif datatype == "bf16":
     torch_dtype = torch.bfloat16
     if use_cuda and capability is not None and capability < (8, 0):
       raise RuntimeError("BF16 requires SM 8.0+; use fp16")
+    if not use_tc and use_cuda:
+      raise RuntimeError(
+          "BF16 in 'gpu' mode cannot guarantee CUDA-core-only execution. "
+          "cuDNN unconditionally uses Tensor Cores for BF16 convolutions. "
+          "Use 'fp32' + 'gpu' for a genuine CUDA-core baseline, "
+          "or 'tensorcores' mode for BF16 Tensor Core measurements."
+      )
   else:
     print("Error: datatype not available! Use 'fp32', 'fp16', or 'bf16'.")
     return

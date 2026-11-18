@@ -38,8 +38,16 @@ exec_modes=(${EXEC_MODES:-gpu tensorcores})
 failures=0
 
 for size in "${sizes[@]}"; do
-    for datatype in "${datatypes[@]}"; do
-        for mode in "${exec_modes[@]}"; do
+    for mode in "${exec_modes[@]}"; do
+        # gpu mode → FP16;  tensorcores mode → BF16
+        if [[ "$mode" == "gpu" ]]; then
+            mode_datatypes=(fp16)
+        elif [[ "$mode" == "tensorcores" ]]; then
+            mode_datatypes=(bf16)
+        else
+            mode_datatypes=("${datatypes[@]}")
+        fi
+        for datatype in "${mode_datatypes[@]}"; do
             printf '\n[INFO] Running %s Multigrid %dx%d %s (%s iter, %s runs)\n' \
                 "$mode" "$size" "$size" "$datatype" "$iterations" "$runs"
             if ! python3 "$script_dir/executeInNvidia.py" \
