@@ -27,7 +27,7 @@ python3 "$script_dir/warmup.py"
 # --- Matrix sizes, datatypes, and execution modes ---------------------------
 sizes=(256 512 1024 2048 4096 8192 12288 16384 20480 24576 28672 32768)
 datatypes=(fp32 fp16 bf16)
-exec_modes=(cpu gpu tensorcores)
+exec_modes=(${EXEC_MODES:-gpu tensorcores})
 failures=0
 
 for size in "${sizes[@]}"; do

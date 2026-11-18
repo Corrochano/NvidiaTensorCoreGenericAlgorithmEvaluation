@@ -7,6 +7,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # Default settings (can be overridden by environment variables, CLI flags, or positional arguments)
 runs="${RUNS:-1}"
 iterations="${ITERATIONS:-100}"
+modes="${EXEC_MODES:-gpu tensorcores}"
 selected_benchmarks=()
 
 print_usage() {
@@ -22,6 +23,7 @@ Arguments:
 Options:
   -r, --runs N         Set number of runs (overrides RUNS env var)
   -i, --iterations N   Set number of iterations (overrides ITERATIONS env var)
+  -m, --modes MODES    Execution modes, e.g. "gpu tensorcores" (default: "gpu tensorcores")
   -b, --benchmark NAME Run only specific benchmark: gemm, jacobi, multigrid, or all
                        (can be specified multiple times)
   -h, --help           Display this help message and exit
@@ -29,9 +31,10 @@ Options:
 Environment Variables:
   RUNS                 Default number of runs (default: 1)
   ITERATIONS           Default number of iterations (default: 100)
+  EXEC_MODES           Default execution modes (default: "gpu tensorcores")
 
 Examples:
-  ./$(basename "$0")                      # Run all 3 benchmarks with defaults
+  ./$(basename "$0")                      # Run all 3 benchmarks with defaults (GPU & Tensor Cores)
   ./$(basename "$0") 3 50                 # Run all 3 with RUNS=3, ITERATIONS=50
   RUNS=2 ITERATIONS=200 ./$(basename "$0") # Run using environment variables
   ./$(basename "$0") --runs 5 --benchmark gemm --benchmark jacobi
@@ -60,6 +63,14 @@ while [[ $# -gt 0 ]]; do
                 exit 2
             fi
             iterations="$2"
+            shift 2
+            ;;
+        -m|--mode|--modes)
+            if [[ $# -lt 2 ]]; then
+                printf '[ERROR] %s requires an argument.\n' "$1" >&2
+                exit 2
+            fi
+            modes="$2"
             shift 2
             ;;
         -b|--benchmark)
@@ -158,6 +169,7 @@ gpu_name=$(python3 -c "import torch; print(torch.cuda.get_device_name(0))" 2>/de
 # Export variables so child scripts inherit them
 export RUNS="$runs"
 export ITERATIONS="$iterations"
+export EXEC_MODES="$modes"
 
 printf '======================================================================\n'
 printf '           NVIDIA Tensor Core Generic Algorithm Benchmarks            \n'
@@ -165,6 +177,7 @@ printf '======================================================================\n
 printf '  GPU:        %s\n' "$gpu_name"
 printf '  Runs:       %s\n' "$runs"
 printf '  Iterations: %s (Jacobi & Multigrid)\n' "$iterations"
+printf '  Modes:      %s\n' "$modes"
 printf '  GEMM:       %s\n' "$([ "$run_gemm" = true ] && echo "YES" || echo "SKIP")"
 printf '  Jacobi:     %s\n' "$([ "$run_jacobi" = true ] && echo "YES" || echo "SKIP")"
 printf '  Multigrid:  %s\n' "$([ "$run_multigrid" = true ] && echo "YES" || echo "SKIP")"
