@@ -25,7 +25,8 @@ if ! python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; th
 fi
 
 gpu_name=$(python3 -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null)
-printf '[INFO] GPU detected: %s\n' "$gpu_name"
+sm_major=$(python3 -c "import torch; print(torch.cuda.get_device_capability(0)[0])" 2>/dev/null || echo 0)
+printf '[INFO] GPU detected: %s (SM major: %s)\n' "$gpu_name" "$sm_major"
 
 # --- Warmup -----------------------------------------------------------------
 printf '\n[INFO] Running GPU warmup...\n'
@@ -33,19 +34,23 @@ python3 "$script_dir/warmup.py"
 
 # --- Grid sizes, datatypes, and execution modes -----------------------------
 sizes=(256 512 1024 2048 4096 8192 12288 16384 20480 24576 28672 32768)
-datatypes=(fp32 fp16 bf16)
 exec_modes=(${EXEC_MODES:-gpu tensorcores})
 failures=0
 
 for size in "${sizes[@]}"; do
     for mode in "${exec_modes[@]}"; do
-        # gpu mode → FP16;  tensorcores mode → BF16
+        # 'gpu' mode: standard CUDA cores baseline (no Tensor Cores) -> FP32 (allow_tf32=False)
+        # 'tensorcores' mode: Tensor Cores -> FP16 (SM 7+), plus TF32 (FP32) and BF16 if SM >= 8
         if [[ "$mode" == "gpu" ]]; then
-            mode_datatypes=(fp16)
+            mode_datatypes=(fp32)
         elif [[ "$mode" == "tensorcores" ]]; then
-            mode_datatypes=(bf16)
+            if (( sm_major >= 8 )); then
+                mode_datatypes=(fp32 fp16 bf16)
+            else
+                mode_datatypes=(fp16)
+            fi
         else
-            mode_datatypes=("${datatypes[@]}")
+            mode_datatypes=(fp32)
         fi
         for datatype in "${mode_datatypes[@]}"; do
             printf '\n[INFO] Running %s Jacobi %dx%d %s (%s iter, %s runs)\n' \

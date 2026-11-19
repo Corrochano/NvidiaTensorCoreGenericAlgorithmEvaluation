@@ -264,24 +264,34 @@ def main(size, runtimes, datatype, exec_mode, iterations):
     # ---- Dtype setup -------------------------------------------------------
     if datatype == "fp32":
         torch_dtype = torch.float32
-        if use_tc and capability is not None and capability < (8, 0):
-            raise RuntimeError(
-                "FP32 Tensor Core matmul (TF32) requires SM 8.0+; use fp16"
-            )
-        if use_tc and capability is not None and capability >= (8, 0):
+        if use_tc:
+            if capability is not None and capability < (8, 0):
+                raise RuntimeError(
+                    "FP32 Tensor Core matmul (TF32) requires SM 8.0+ (Ampere or newer). "
+                    "On SM 7.x (Volta/Turing), use 'fp16' for Tensor Cores."
+                )
             print("[INFO] TF32 Tensor Core acceleration enabled for FP32 matmul")
+        else:
+            print("[INFO] CUDA cores baseline: Tensor Cores disabled (standard FP32 ALUs)")
     elif datatype == "fp16":
         torch_dtype = torch.float16
+        if not use_tc and use_cuda:
+            raise RuntimeError(
+                "FP16 in 'gpu' mode cannot disable Tensor Cores: cuBLAS unconditionally "
+                "uses Tensor Cores for FP16 matmul on modern NVIDIA GPUs. "
+                "To benchmark GPU execution WITHOUT Tensor Cores, use datatype='fp32' with exec_mode='gpu'. "
+                "To benchmark FP16 WITH Tensor Cores, use exec_mode='tensorcores'."
+            )
     elif datatype == "bf16":
         torch_dtype = torch.bfloat16
         if use_cuda and capability is not None and capability < (8, 0):
-            raise RuntimeError("BF16 requires SM 8.0+; use fp16")
+            raise RuntimeError("BF16 requires SM 8.0+ (Ampere or newer); use fp16")
         if not use_tc and use_cuda:
             raise RuntimeError(
-                "BF16 in 'gpu' mode cannot guarantee CUDA-core-only execution. "
-                "cuBLAS unconditionally uses Tensor Cores for BF16 matmul. "
-                "Use 'fp32' + 'gpu' for a genuine CUDA-core baseline, "
-                "or 'tensorcores' mode for BF16 Tensor Core measurements."
+                "BF16 in 'gpu' mode cannot disable Tensor Cores: cuBLAS unconditionally "
+                "uses Tensor Cores for BF16 matmul on modern NVIDIA GPUs. "
+                "To benchmark GPU execution WITHOUT Tensor Cores, use datatype='fp32' with exec_mode='gpu'. "
+                "To benchmark BF16 WITH Tensor Cores, use exec_mode='tensorcores'."
             )
     else:
         print("Error: datatype not available! Use 'fp32', 'fp16', or 'bf16'.")

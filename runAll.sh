@@ -273,5 +273,9 @@ if (( overall_failures > 0 )); then
     exit 1
 else
     printf '\n[SUCCESS] All executed benchmarks finished successfully.\n'
+    if [[ -f "$script_dir/compare_results.py" ]]; then
+        printf '\nGenerating Tensor Core vs CUDA Cores comparison summary...\n'
+        python3 "$script_dir/compare_results.py" || true
+    fi
     exit 0
 fi
